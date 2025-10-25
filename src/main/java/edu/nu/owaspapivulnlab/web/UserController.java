@@ -6,11 +6,15 @@ import org.springframework.web.bind.annotation.*;
 import edu.nu.owaspapivulnlab.model.AppUser;
 import edu.nu.owaspapivulnlab.model.UserDTO;
 import edu.nu.owaspapivulnlab.repo.AppUserRepository;
-
+import edu.nu.owaspapivulnlab.dto.UserCreateDTO;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.http.HttpStatus;
+
 
 @RestController
 @RequestMapping("/api/users")
@@ -31,8 +35,21 @@ public class UserController {
 
     // VULNERABILITY(API6: Mass Assignment) - binds role/isAdmin from client
     @PostMapping
-    public AppUser create(@Valid @RequestBody AppUser body) {
-        return users.save(body);
+    public ResponseEntity<?> create(@Valid @RequestBody UserCreateDTO dto) {
+        BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
+        AppUser user = AppUser.builder()
+                .username(dto.getUsername())
+                .password(encoder.encode(dto.getPassword()))
+                .email(dto.getEmail())
+                .role("USER")
+                .isAdmin(false)
+                .build();
+        users.save(user);
+        Map<String, Object> response = new HashMap<>();
+        response.put("id", user.getId());
+        response.put("username", user.getUsername());
+        response.put("email", user.getEmail());
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
     // VULNERABILITY(API9: Improper Inventory + API8 Injection style): naive 'search' that can be abused for enumeration
