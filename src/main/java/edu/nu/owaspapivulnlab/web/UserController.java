@@ -4,11 +4,13 @@ import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import edu.nu.owaspapivulnlab.model.AppUser;
+import edu.nu.owaspapivulnlab.model.UserDTO;
 import edu.nu.owaspapivulnlab.repo.AppUserRepository;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/users")
@@ -19,10 +21,12 @@ public class UserController {
         this.users = users;
     }
 
-    // VULNERABILITY(API1: BOLA/IDOR) - no ownership check, any authenticated OR anonymous GET (due to SecurityConfig) can fetch any user
-    @GetMapping("/{id}")
-    public AppUser get(@PathVariable Long id) {
-        return users.findById(id).orElseThrow(() -> new RuntimeException("User not found"));
+    // ✅ FIXED: Converts to DTO to prevent sensitive data exposure
+    @GetMapping("/api/users")
+    public List<UserDTO> allUsers() {
+        return users.findAll().stream()
+                .map(user -> new UserDTO(user.getId(), user.getUsername()))
+                .collect(Collectors.toList());
     }
 
     // VULNERABILITY(API6: Mass Assignment) - binds role/isAdmin from client
