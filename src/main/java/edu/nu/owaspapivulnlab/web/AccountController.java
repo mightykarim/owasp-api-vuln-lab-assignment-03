@@ -24,24 +24,32 @@ public class AccountController {
         this.users = users;
     }
 
-    // VULNERABILITY(API1: BOLA) - no check whether account belongs to caller
+    // FIXED VULNERABILITY(API1: BOLA) - no check whether account belongs to caller
     @GetMapping("/{id}/balance")
-    public Double balance(@PathVariable Long id) {
+    public ResponseEntity<?> balance(@PathVariable Long id, Authentication auth) {
         Account a = accounts.findById(id).orElseThrow(() -> new RuntimeException("Account not found"));
-        return a.getBalance();
+        AppUser me = users.findByUsername(auth.getName()).orElseThrow();
+        if (!a.getOwnerUserId().equals(me.getId())) {
+            return ResponseEntity.status(403).body(Map.of("error", "Forbidden: not your account"));
+        }
+        return ResponseEntity.ok(Map.of("balance", a.getBalance()));
     }
 
     // VULNERABILITY(API4: Unrestricted Resource Consumption) - no rate limiting on transfer
-    // VULNERABILITY(API5/1): no authorization check on owner
+    // Fixed VULNERABILITY(API5/1): no authorization check on owner
     @PostMapping("/{id}/transfer")
-    public ResponseEntity<?> transfer(@PathVariable Long id, @RequestParam Double amount) {
+    public ResponseEntity<?> transfer(@PathVariable Long id, @RequestParam Double amount, Authentication auth) {
+        AppUser me = users.findByUsername(auth.getName()).orElseThrow();
         Account a = accounts.findById(id).orElseThrow(() -> new RuntimeException("Account not found"));
+        if (!a.getOwnerUserId().equals(me.getId())) {
+            return ResponseEntity.status(403).body(Map.of("error", "Forbidden"));
+        }
+        if (amount <= 0 || amount > a.getBalance()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid amount"));
+        }
         a.setBalance(a.getBalance() - amount);
         accounts.save(a);
-        Map<String, Object> response = new HashMap<>();
-        response.put("status", "ok");
-        response.put("remaining", a.getBalance());
-        return ResponseEntity.ok(response);
+        return ResponseEntity.ok(Map.of("status", "ok", "remaining", a.getBalance()));
     }
 
     // Safe-ish helper to view my accounts (still leaks more than needed)
