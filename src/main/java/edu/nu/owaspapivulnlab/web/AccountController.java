@@ -30,47 +30,93 @@ public class AccountController {
         this.users = users;
     }
 
-    // ✅ Fixed: Enforce ownership before returning balance
+    // Fixed: Enforce ownership before returning balance (robust against nulls/IAE)
     @GetMapping("/{id}/balance")
-    public ResponseEntity<?> balance(@PathVariable Long id, Authentication auth) {
-        Account a = accounts.findById(id).orElseThrow(() -> new RuntimeException("Account not found"));
-        AppUser me = users.findByUsername(auth.getName()).orElseThrow();
-
-        if (!a.getOwnerUserId().equals(me.getId())) {
-            return ResponseEntity.status(403).body(Map.of("error", "Forbidden: not your account"));
+    public ResponseEntity<?> balance(@PathVariable("id") Long id, Authentication auth) {
+        // Extract authenticated user from JWT token
+        if (auth == null || auth.getName() == null) {
+            return ResponseEntity.status(401).body(Collections.singletonMap("error", "Authentication required"));
         }
-
-        return ResponseEntity.ok(Map.of("balance", a.getBalance()));
+        
+        // Find the authenticated user
+        AppUser currentUser = users.findByUsername(auth.getName())
+            .orElseThrow(() -> new RuntimeException("User not found"));
+        
+        // Find the requested account
+        Account account = accounts.findById(id)
+            .orElseThrow(() -> new RuntimeException("Account not found"));
+        
+        // AUTHORIZATION CHECK - Verify account belongs to authenticated user
+        if (!account.getOwnerUserId().equals(currentUser.getId())) {
+            return ResponseEntity.status(403).body(Collections.singletonMap("error", "Access denied - Account does not belong to you"));
+        }
+        
+        // Return balance only if user owns the account
+        return ResponseEntity.ok(Collections.singletonMap("balance", account.getBalance()));
     }
 
     // ✅ Fixed: Added Rate Limiting + Ownership Check + Input Validation
-    @PostMapping("/{id}/transfer")
-    public ResponseEntity<?> transfer(@PathVariable Long id,
-                                      @RequestParam Double amount,
-                                      Authentication auth) {
+ // ✅ Fixed: Match POST /api/accounts/transfer and handle JSON body with validation
+@PostMapping("/transfer")
+public ResponseEntity<?> transfer(@RequestBody Map<String, Object> body, Authentication auth) {
 
-        // ✅ FIX 6.2 Step 2: Apply Rate Limiting check before processing
-        if (bucket.tryConsume(1) == false) {
-            // Using the requested specific error message:
-            return ResponseEntity.status(429).body(Map.of("error", "Too many requests"));
-        }
-
-        AppUser me = users.findByUsername(auth.getName()).orElseThrow();
-        Account a = accounts.findById(id).orElseThrow(() -> new RuntimeException("Account not found"));
-
-        if (!a.getOwnerUserId().equals(me.getId())) {
-            return ResponseEntity.status(403).body(Map.of("error", "Forbidden"));
-        }
-
-        if (amount == null || amount <= 0 || amount > a.getBalance()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Invalid amount"));
-        }
-
-        a.setBalance(a.getBalance() - amount);
-        accounts.save(a);
-
-        return ResponseEntity.ok(Map.of("status", "ok", "remaining", a.getBalance()));
+    // ✅ Rate limiting
+    if (!bucket.tryConsume(1)) {
+        return ResponseEntity.status(429).body(Map.of("error", "Too many requests"));
     }
+
+    // ✅ Authentication required
+    if (auth == null || auth.getName() == null) {
+        return ResponseEntity.status(401).body(Map.of("error", "Authentication required"));
+    }
+
+    // ✅ Validate input presence
+   if (!body.containsKey("fromAccountId") || !body.containsKey("toAccountId") || !body.containsKey("amount")) {
+    return ResponseEntity.badRequest().body(Map.of("error", "Invalid input - Missing required field"));
+}
+    Long fromId, toId;
+    Double amount;
+
+    try {
+        fromId = Long.parseLong(body.get("fromAccountId").toString());
+        toId = Long.parseLong(body.get("toAccountId").toString());
+        amount = Double.parseDouble(body.get("amount").toString());
+    } catch (NumberFormatException e) {
+        return ResponseEntity.badRequest().body(Map.of("error", "Invalid account ID"));
+    }
+
+    // ✅ Amount validation
+    if (amount <= 0) {
+        return ResponseEntity.badRequest().body(Map.of("error", "Invalid input - amount must be positive"));
+    }
+    if (amount > 1_000_000) {
+        return ResponseEntity.badRequest().body(Map.of("error", "Amount exceeds limit"));
+    }
+
+    // ✅ Load authenticated user and accounts
+    AppUser me = users.findByUsername(auth.getName()).orElseThrow();
+    Account fromAcc = accounts.findById(fromId).orElseThrow(() -> new RuntimeException("Account not found"));
+    Account toAcc = accounts.findById(toId).orElseThrow(() -> new RuntimeException("Account not found"));
+
+    // ✅ Ownership check
+    if (!fromAcc.getOwnerUserId().equals(me.getId())) {
+        return ResponseEntity.status(403).body(Map.of("error", "Forbidden"));
+    }
+
+    if (fromAcc.getBalance() < amount) {
+        return ResponseEntity.badRequest().body(Map.of("error", "Insufficient balance"));
+    }
+
+    // ✅ Perform transfer
+    fromAcc.setBalance(fromAcc.getBalance() - amount);
+    toAcc.setBalance(toAcc.getBalance() + amount);
+    accounts.save(fromAcc);
+    accounts.save(toAcc);
+
+    return ResponseEntity.ok(Map.of("status", "ok", "remaining", fromAcc.getBalance()));
+}
+
+
 
     // ✅ Safe: Only returns accounts belonging to logged-in user
     @GetMapping("/mine")
