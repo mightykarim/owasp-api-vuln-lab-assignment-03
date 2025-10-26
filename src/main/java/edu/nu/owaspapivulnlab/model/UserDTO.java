@@ -3,7 +3,7 @@ package edu.nu.owaspapivulnlab.model;
 public class UserDTO {
     private Long id;
     private String username;
-
+    private double Balance;
     public UserDTO() {}
 
     public UserDTO(Long id, String username) {
@@ -18,7 +18,13 @@ public class UserDTO {
     public String getUsername() {
         return username;
     }
-
+    public double getBalance() { 
+        return Balance; 
+    }
+    public void setBalance(double balance)
+     { 
+        this.Balance = balance;
+     }
     public void setId(Long id) {
         this.id = id;
     }

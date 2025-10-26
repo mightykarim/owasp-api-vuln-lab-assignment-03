@@ -17,3 +17,4 @@ edu\nu\owaspapivulnlab\model\AppUser$AppUserBuilder.class
 edu\nu\owaspapivulnlab\model\UserDTO.class
 edu\nu\owaspapivulnlab\web\AdminController.class
 edu\nu\owaspapivulnlab\config\DataSeeder.class
+edu\nu\owaspapivulnlab\dto\UserCreateDTO.class

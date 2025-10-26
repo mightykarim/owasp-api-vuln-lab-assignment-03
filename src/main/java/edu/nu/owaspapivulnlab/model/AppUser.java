@@ -20,6 +20,10 @@ public class AppUser {
     // VULNERABILITY(API6: Mass Assignment): role and isAdmin are bindable via incoming JSON
     private String role;   // e.g., "USER" or "ADMIN"
     private boolean isAdmin;
+    
+    public boolean isAdmin() {
+        return isAdmin;
+    }
 
     @Email
     private String email;

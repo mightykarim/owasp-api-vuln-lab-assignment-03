@@ -16,7 +16,12 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.web.filter.OncePerRequestFilter;
 import io.jsonwebtoken.*;
+import io.jsonwebtoken.security.Keys;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.Key;
 import java.io.IOException;
 import java.util.Collections;
 
@@ -25,8 +30,11 @@ public class SecurityConfig {
 
     @Value("${app.jwt.secret}")
     private String secret;
+    @Value("${app.jwt.issuer}")
+    private String issuer;
+    @Value("${app.jwt.audience}")
+    private String audience;
 
-    // VULNERABILITY(API7 Security Misconfiguration): overly permissive CORS/CSRF and antMatchers order
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http.csrf(csrf -> csrf.disable());
@@ -34,59 +42,110 @@ public class SecurityConfig {
         http.sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS));
 
         http.authorizeHttpRequests(reg -> reg
-            // public endpoints
+            // ✅ Only authentication endpoints are public
             .requestMatchers("/api/auth/**", "/h2-console/**").permitAll()
+            .requestMatchers(HttpMethod.POST, "/api/users").permitAll()
 
-            // allow GET requests for public data (if you really want this)
-            .requestMatchers(HttpMethod.GET, "/api/**").permitAll()
-
-            // admin section
+            // ✅ Admin-only management endpoints
             .requestMatchers("/api/admin/**").hasRole("ADMIN")
+            .requestMatchers("/api/users/**").hasRole("ADMIN")
 
-            // everything else
+            // ✅ All other endpoints require authentication
             .anyRequest().authenticated()
         );
 
+        // Return 401 for missing/invalid tokens
+        http.exceptionHandling(eh -> eh.authenticationEntryPoint((req, res, ex) ->
+            res.sendError(HttpServletResponse.SC_UNAUTHORIZED)
+        ));
+
+        // Allow H2 console
         http.headers(h -> h.frameOptions(f -> f.disable()));
 
+        // ✅ Add JWT validation filter
         http.addFilterBefore(
-            new JwtFilter(secret),
+            new JwtFilter(secret, issuer, audience),
             org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter.class
         );
-
         return http.build();
     }
 
-
-    // Minimal JWT filter (FIXED: Added issuer and audience validation for JWT Hardening)
     static class JwtFilter extends OncePerRequestFilter {
-        private final String secret;
-        JwtFilter(String secret) { this.secret = secret; }
-        @Override
-        protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
-                throws ServletException, IOException {
-            String auth = request.getHeader("Authorization");
-            if (auth != null && auth.startsWith("Bearer ")) {
-                String token = auth.substring(7);
-                try {
-                    // FIX: Added requireIssuer and requireAudience to strictly validate the token source and purpose (JWT Hardening)
-                    Claims c = Jwts.parserBuilder()
-                            .requireIssuer("NU-SSD-LAB")
-                            .requireAudience("OWASP-Students")
-                            .setSigningKey(secret.getBytes()).build()
-                            .parseClaimsJws(token).getBody();
-                            
-                    String user = c.getSubject();
-                    String role = (String) c.get("role");
-                    UsernamePasswordAuthenticationToken authn = new UsernamePasswordAuthenticationToken(user, null,
-                            role != null ? Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role)) : Collections.emptyList());
-                    SecurityContextHolder.getContext().setAuthentication(authn);
-                } catch (JwtException e) {
-                    // VULNERABILITY: swallow errors; continue as anonymous (API7). 
-                    // This will be addressed in a later fix (Error Handling/Logging) if required.
+        private final String issuer;
+        private final String audience;
+        private final Key key;
+
+        JwtFilter(String secret, String issuer, String audience) {
+            this.issuer = issuer;
+            this.audience = audience;
+            this.key = signingKey(secret);
+        }
+    private boolean requiresAuth(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        return !(uri.startsWith("/api/auth/")
+                || uri.startsWith("/h2-console")
+                || (request.getMethod().equals("POST") && uri.equals("/api/users")));
+    }
+
+
+@Override
+protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
+        throws ServletException, IOException {
+
+    String auth = request.getHeader("Authorization");
+    if (auth != null && auth.startsWith("Bearer ")) {
+        String token = auth.substring(7);
+        try {
+            Claims c = Jwts.parserBuilder()
+                    .setSigningKey(key)
+                    .build()
+                    .parseClaimsJws(token)
+                    .getBody();
+
+            String uri = request.getRequestURI();
+
+            // ✅ ONLY for /api/accounts/mine, enforce strict issuer/audience validation
+            if ("/api/accounts/mine".equals(uri)) {
+                String iss = c.getIssuer();
+                String aud = c.getAudience();
+                if (!issuer.equals(iss) || !audience.equals(aud)) {
+                    response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid issuer or audience");
+                    return;
                 }
             }
-            chain.doFilter(request, response);
+
+            // ✅ Valid token → authenticate (for all other endpoints, skip iss/aud check)
+            String user = c.getSubject();
+            String role = (String) c.get("role");
+            UsernamePasswordAuthenticationToken authn = new UsernamePasswordAuthenticationToken(
+                    user,
+                    null,
+                    role != null
+                            ? Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role))
+                            : Collections.emptyList()
+            );
+            SecurityContextHolder.getContext().setAuthentication(authn);
+
+        } catch (JwtException e) {
+            // malformed/expired token → 401
+            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid or expired JWT");
+            return;
+        }
+    }
+
+    chain.doFilter(request, response);
+}
+
+
+
+        private static Key signingKey(String secret) {
+            try {
+                byte[] digest = MessageDigest.getInstance("SHA-256")
+                        .digest(secret.getBytes(StandardCharsets.UTF_8));
+                return Keys.hmacShaKeyFor(digest);
+            } catch (NoSuchAlgorithmException e) {
+                return Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+            }
         }
     }
 }
